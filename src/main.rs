@@ -4021,7 +4021,12 @@ impl UiApp {
         }
 
         ui.horizontal(|ui| {
-            if accent_button(ui, "Play/Pause (Ctrl+Space)").clicked() {
+            let play_label = if playback_is_playing(&self.playback) {
+                "Pause (Ctrl+Space)"
+            } else {
+                "Play (Ctrl+Space)"
+            };
+            if accent_button(ui, play_label).clicked() {
                 if !has_audio {
                     self.push_status("No active audio selected.");
                     return;
