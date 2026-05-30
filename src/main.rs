@@ -968,7 +968,6 @@ impl LegalDocKind {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AppPage {
     Home,
-    Setup,
     Transcribe,
     Review,
     Live,
@@ -978,9 +977,8 @@ enum AppPage {
 }
 
 impl AppPage {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 7] = [
         Self::Home,
-        Self::Setup,
         Self::Transcribe,
         Self::Review,
         Self::Live,
@@ -992,7 +990,6 @@ impl AppPage {
     fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Setup => "Setup",
             Self::Transcribe => "Transcribe",
             Self::Review => "Review",
             Self::Live => "Live",
@@ -1005,7 +1002,6 @@ impl AppPage {
     fn description(self) -> &'static str {
         match self {
             Self::Home => "Readiness, shortcuts, and current status.",
-            Self::Setup => "Install runtime and models, then configure optional features.",
             Self::Transcribe => "Add media files and run local transcription jobs.",
             Self::Review => "Open, edit, anonymise, rename speakers, and play transcripts.",
             Self::Live => "Record microphone audio with live transcription and diarization.",
@@ -4224,7 +4220,7 @@ impl UiApp {
             ui.separator();
             ui.horizontal_wrapped(|ui| {
                 if accent_button(ui, "Open Setup").clicked() {
-                    self.page = AppPage::Setup;
+                    self.show_runtime_settings = true;
                 }
                 if secondary_button(ui, "Transcribe Files").clicked() {
                     self.page = AppPage::Transcribe;
@@ -4271,11 +4267,6 @@ impl UiApp {
                 }
             });
         });
-    }
-
-    fn ui_setup_page(&mut self, ui: &mut egui::Ui) {
-        self.ui_page_heading(ui, AppPage::Setup);
-        self.ui_setup_wizard(ui, false);
     }
 
     fn setup_wizard_complete(&self) -> bool {
@@ -4722,7 +4713,7 @@ impl UiApp {
             engine_panel_frame().show(&mut cols[0], |ui| {
                 ui.heading("Configuration");
                 if accent_button(ui, "Open Setup").clicked() {
-                    self.page = AppPage::Setup;
+                    self.show_runtime_settings = true;
                 }
                 if secondary_button(ui, "Transcription settings").clicked() {
                     self.show_transcription_settings = true;
@@ -6538,7 +6529,6 @@ impl UiApp {
             )
             .show(ctx, |ui| match self.page {
                 AppPage::Home => self.ui_home_page(ui),
-                AppPage::Setup => self.ui_setup_page(ui),
                 AppPage::Transcribe => {
                     self.ui_header_parity(ui);
                     self.ui_transcription_parity(ui);
