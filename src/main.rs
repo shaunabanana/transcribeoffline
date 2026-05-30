@@ -249,15 +249,6 @@ fn warning_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
-fn tab_button(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
-    ui.add(
-        egui::Button::new(label)
-            .selected(selected)
-            .corner_radius(egui::CornerRadius::same(6))
-            .min_size(egui::vec2(0.0, 22.0)),
-    )
-}
-
 fn model_repo_license_note(
     ui: &mut egui::Ui,
     repo_label: &str,
@@ -4643,7 +4634,7 @@ impl UiApp {
     fn ui_review_page(&mut self, ui: &mut egui::Ui) {
         self.ui_page_heading(ui, AppPage::Review);
         ui.label(
-            "Review currently uses the existing transcript workspace. A later slice will separate it from transcription inputs and existing-result discovery.",
+            "Open transcript outputs, review speaker-labelled text, edit safely, anonymise, rename speakers, and use audio-linked playback.",
         );
         ui.separator();
         self.ui_transcription_parity(ui);
@@ -4759,44 +4750,6 @@ impl UiApp {
                     self.ui_runtime_parameters_panel(ui);
                 });
             });
-    }
-
-    fn ui_header_parity(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Mode:");
-            let mut mode = self.settings.mode.clone();
-            egui::ComboBox::from_id_salt("mode_combo_parity")
-                .selected_text(mode.clone())
-                .width(116.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut mode, "transcript".to_string(), "transcript");
-                    ui.selectable_value(&mut mode, "speech".to_string(), "speech");
-                    ui.selectable_value(&mut mode, "subtitle".to_string(), "subtitle");
-                });
-            if mode != self.settings.mode {
-                self.settings.mode = mode;
-                self.queue_save();
-            }
-
-            ui.add_space(8.0);
-            ui.label(self.mode_note_text_parity());
-            ui.add_space(6.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if tab_button(ui, "Chat", self.tab == 1).clicked() {
-                    self.page = AppPage::Chat;
-                    self.tab = 1;
-                }
-                if tab_button(ui, "Live", self.tab == 2).clicked() {
-                    self.page = AppPage::Live;
-                    self.tab = 2;
-                }
-                if tab_button(ui, "Transcription", self.tab == 0).clicked() {
-                    self.page = AppPage::Transcribe;
-                    self.tab = 0;
-                }
-            });
-        });
-        ui.separator();
     }
 
     fn ui_status_bar_parity(&mut self, ui: &mut egui::Ui) {
@@ -5357,241 +5310,291 @@ impl UiApp {
         }
     }
 
-    fn ui_transcription_parity(&mut self, ui: &mut egui::Ui) {
-        ui.columns(2, |cols| {
-            engine_panel_frame().show(&mut cols[0], |ui| {
-                let list_height = 128.0;
-                ui.heading("Media files (inputs)");
-                ui.set_min_height(list_height + 24.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("media_list_parity")
-                    .max_height(list_height)
-                    .show(ui, |ui| {
-                        let entries = self
-                            .runtime_state
-                            .lock()
-                            .ok()
-                            .map(|s| s.media_entries.clone())
-                            .unwrap_or_default();
-                        let mut updates = Vec::<(usize, bool)>::new();
-                        let mut selected_audio: Option<PathBuf> = None;
-                        if entries.is_empty() {
-                            ui.allocate_space(egui::vec2(ui.available_width(), list_height - 10.0));
-                        } else {
-                            for (idx, entry) in entries.iter().enumerate() {
-                                ui.push_id(("media_entry", idx), |ui| {
-                                    ui.horizontal(|ui| {
-                                        let mut selected = entry.selected;
-                                        let row_label = entry
-                                            .path
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .map(|name| name.to_string())
-                                            .unwrap_or_else(|| entry.path.display().to_string());
-                                        if ui.checkbox(&mut selected, "").changed() {
-                                            updates.push((idx, selected));
-                                        }
-                                        let response = ui.selectable_label(
-                                            self.selected_media_row == Some(idx),
-                                            row_label,
-                                        );
-                                        if response.clicked() {
-                                            self.selected_media_row = Some(idx);
-                                            selected_audio = Some(entry.path.clone());
-                                        }
-                                        response.on_hover_text(entry.path.display().to_string());
-                                    });
-                                });
-                            }
-                        }
-                        if !updates.is_empty() {
-                            if let Ok(mut state) = self.runtime_state.lock() {
-                                for (idx, selected) in updates {
-                                    if let Some(item) = state.media_entries.get_mut(idx) {
-                                        item.selected = selected;
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(path) = selected_audio {
-                            self.settings.audio_file = path.display().to_string();
-                            self.active_audio_path = Some(path);
-                            self.queue_save();
-                        }
-                    });
-            });
-
-            engine_panel_frame().show(&mut cols[1], |ui| {
-                let list_height = 128.0;
-                ui.heading("Output files (results)");
-                ui.set_min_height(list_height + 24.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("output_list_parity")
-                    .max_height(list_height)
-                    .show(ui, |ui| {
-                        let entries = self
-                            .runtime_state
-                            .lock()
-                            .ok()
-                            .map(|s| s.output_entries.clone())
-                            .unwrap_or_default();
-                        let mut updates = Vec::<(usize, bool)>::new();
-                        let mut output_to_open: Option<PathBuf> = None;
-                        if entries.is_empty() {
-                            ui.allocate_space(egui::vec2(ui.available_width(), list_height - 10.0));
-                        } else {
-                            for (idx, entry) in entries.iter().enumerate() {
-                                ui.push_id(("output_entry", idx), |ui| {
-                                    ui.horizontal(|ui| {
-                                        let mut selected = entry.selected;
-                                        let row_label = entry
-                                            .path
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .map(|name| name.to_string())
-                                            .unwrap_or_else(|| entry.path.display().to_string());
-                                        if ui.checkbox(&mut selected, "").changed() {
-                                            updates.push((idx, selected));
-                                            if selected {
-                                                self.selected_output_row = Some(idx);
-                                                output_to_open = Some(entry.path.clone());
-                                            }
-                                        }
-                                        let response = ui.selectable_label(
-                                            self.selected_output_row == Some(idx),
-                                            row_label,
-                                        );
-                                        if response.clicked() {
-                                            self.selected_output_row = Some(idx);
-                                            output_to_open = Some(entry.path.clone());
-                                        }
-                                        response.on_hover_text(entry.path.display().to_string());
-                                    });
-                                });
-                            }
-                        }
-                        if !updates.is_empty() {
-                            if let Ok(mut state) = self.runtime_state.lock() {
-                                for (idx, selected) in updates {
-                                    if let Some(item) = state.output_entries.get_mut(idx) {
-                                        item.selected = selected;
-                                    }
-                                }
-                            }
-                        }
-                        if let Some(path) = output_to_open {
-                            match self.open_output_transcript(&path) {
-                                Ok(_) => {
-                                    self.push_status(&format!(
-                                        "Loaded output transcript: {}",
-                                        path.display()
-                                    ));
-                                }
-                                Err(err) => {
-                                    self.open_modal(
-                                        "Failed to load output transcript",
-                                        err.to_string(),
-                                        true,
-                                    );
-                                    self.push_status(&format!(
-                                        "Failed to load output transcript: {err}"
-                                    ));
-                                }
-                            }
-                        }
-                    });
-            });
-        });
-
-        ui.columns(2, |cols| {
-            cols[0].horizontal_wrapped(|ui| {
-                if secondary_button(ui, "Add...").clicked() {
-                    self.do_add_media_files();
-                }
-                if secondary_button(ui, "Remove selected").clicked() {
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        state.media_entries.retain(|e| !e.selected);
-                    }
-                }
-                if secondary_button(ui, "Select all").clicked() {
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        for e in &mut state.media_entries {
-                            e.selected = true;
-                        }
-                    }
-                }
-                if secondary_button(ui, "Select none").clicked() {
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        for e in &mut state.media_entries {
-                            e.selected = false;
-                        }
-                    }
-                }
-                if accent_button(ui, "Run selected >").clicked() {
-                    let files = self
+    fn ui_media_inputs_panel(&mut self, ui: &mut egui::Ui, list_height: f32) {
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Media files");
+            ui.label("Add audio or video files to transcribe locally.");
+            ui.set_min_height(list_height + 44.0);
+            egui::ScrollArea::vertical()
+                .id_salt("media_list_parity")
+                .max_height(list_height)
+                .show(ui, |ui| {
+                    let entries = self
                         .runtime_state
                         .lock()
                         .ok()
-                        .map(|s| {
-                            s.media_entries
-                                .iter()
-                                .filter(|e| e.selected)
-                                .map(|e| e.path.clone())
-                                .collect::<Vec<_>>()
-                        })
+                        .map(|s| s.media_entries.clone())
                         .unwrap_or_default();
-                    self.enqueue_job(files);
-                }
-            });
+                    let mut updates = Vec::<(usize, bool)>::new();
+                    let mut selected_audio: Option<PathBuf> = None;
+                    if entries.is_empty() {
+                        ui.allocate_space(egui::vec2(ui.available_width(), list_height - 10.0));
+                    } else {
+                        for (idx, entry) in entries.iter().enumerate() {
+                            ui.push_id(("media_entry", idx), |ui| {
+                                ui.horizontal(|ui| {
+                                    let mut selected = entry.selected;
+                                    let row_label = entry
+                                        .path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .map(|name| name.to_string())
+                                        .unwrap_or_else(|| entry.path.display().to_string());
+                                    if ui.checkbox(&mut selected, "").changed() {
+                                        updates.push((idx, selected));
+                                    }
+                                    let response = ui.selectable_label(
+                                        self.selected_media_row == Some(idx),
+                                        row_label,
+                                    );
+                                    if response.clicked() {
+                                        self.selected_media_row = Some(idx);
+                                        selected_audio = Some(entry.path.clone());
+                                    }
+                                    response.on_hover_text(entry.path.display().to_string());
+                                });
+                            });
+                        }
+                    }
+                    if !updates.is_empty() {
+                        if let Ok(mut state) = self.runtime_state.lock() {
+                            for (idx, selected) in updates {
+                                if let Some(item) = state.media_entries.get_mut(idx) {
+                                    item.selected = selected;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(path) = selected_audio {
+                        self.settings.audio_file = path.display().to_string();
+                        self.active_audio_path = Some(path);
+                        self.queue_save();
+                    }
+                });
+        });
+    }
 
-            cols[1].horizontal_wrapped(|ui| {
-                if secondary_button(ui, "Add...").clicked() {
-                    self.do_add_output_files();
+    fn ui_media_input_actions(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if secondary_button(ui, "Add files...").clicked() {
+                self.do_add_media_files();
+            }
+            if secondary_button(ui, "Remove selected").clicked() {
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    state.media_entries.retain(|e| !e.selected);
                 }
-                if secondary_button(ui, "Remove selected").clicked() {
-                    let current_output = self.transcript_output_path.clone();
-                    let mut removed_current = false;
-                    let mut any_removed = false;
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        if let Some(current) = current_output.as_ref() {
-                            removed_current = state
-                                .output_entries
-                                .iter()
-                                .any(|entry| entry.selected && entry.path == *current);
-                        }
-                        any_removed = state.output_entries.iter().any(|entry| entry.selected);
-                        state.output_entries.retain(|e| !e.selected);
-                        if removed_current {
-                            state.original_output_path = None;
-                            state.edited_output_path = None;
+            }
+            if secondary_button(ui, "Select all").clicked() {
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    for e in &mut state.media_entries {
+                        e.selected = true;
+                    }
+                }
+            }
+            if secondary_button(ui, "Select none").clicked() {
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    for e in &mut state.media_entries {
+                        e.selected = false;
+                    }
+                }
+            }
+        });
+    }
+
+    fn selected_media_files(&self) -> Vec<PathBuf> {
+        self.runtime_state
+            .lock()
+            .ok()
+            .map(|s| {
+                s.media_entries
+                    .iter()
+                    .filter(|e| e.selected)
+                    .map(|e| e.path.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn ui_output_results_panel(&mut self, ui: &mut egui::Ui, list_height: f32) {
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Transcript outputs");
+            ui.label("Open existing or newly generated transcripts for review.");
+            ui.set_min_height(list_height + 44.0);
+            egui::ScrollArea::vertical()
+                .id_salt("output_list_parity")
+                .max_height(list_height)
+                .show(ui, |ui| {
+                    let entries = self
+                        .runtime_state
+                        .lock()
+                        .ok()
+                        .map(|s| s.output_entries.clone())
+                        .unwrap_or_default();
+                    let mut updates = Vec::<(usize, bool)>::new();
+                    let mut output_to_open: Option<PathBuf> = None;
+                    if entries.is_empty() {
+                        ui.allocate_space(egui::vec2(ui.available_width(), list_height - 10.0));
+                    } else {
+                        for (idx, entry) in entries.iter().enumerate() {
+                            ui.push_id(("output_entry", idx), |ui| {
+                                ui.horizontal(|ui| {
+                                    let mut selected = entry.selected;
+                                    let row_label = entry
+                                        .path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .map(|name| name.to_string())
+                                        .unwrap_or_else(|| entry.path.display().to_string());
+                                    if ui.checkbox(&mut selected, "").changed() {
+                                        updates.push((idx, selected));
+                                        if selected {
+                                            self.selected_output_row = Some(idx);
+                                            output_to_open = Some(entry.path.clone());
+                                        }
+                                    }
+                                    let response = ui.selectable_label(
+                                        self.selected_output_row == Some(idx),
+                                        row_label,
+                                    );
+                                    if response.clicked() {
+                                        self.selected_output_row = Some(idx);
+                                        output_to_open = Some(entry.path.clone());
+                                    }
+                                    response.on_hover_text(entry.path.display().to_string());
+                                });
+                            });
                         }
                     }
-                    if any_removed {
-                        self.selected_output_row = None;
+                    if !updates.is_empty() {
+                        if let Ok(mut state) = self.runtime_state.lock() {
+                            for (idx, selected) in updates {
+                                if let Some(item) = state.output_entries.get_mut(idx) {
+                                    item.selected = selected;
+                                }
+                            }
+                        }
                     }
+                    if let Some(path) = output_to_open {
+                        match self.open_output_transcript(&path) {
+                            Ok(_) => {
+                                self.push_status(&format!(
+                                    "Loaded output transcript: {}",
+                                    path.display()
+                                ));
+                            }
+                            Err(err) => {
+                                self.open_modal(
+                                    "Failed to load output transcript",
+                                    err.to_string(),
+                                    true,
+                                );
+                                self.push_status(&format!(
+                                    "Failed to load output transcript: {err}"
+                                ));
+                            }
+                        }
+                    }
+                });
+        });
+    }
+
+    fn ui_output_actions(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if secondary_button(ui, "Add transcript...").clicked() {
+                self.do_add_output_files();
+            }
+            if secondary_button(ui, "Remove selected").clicked() {
+                let current_output = self.transcript_output_path.clone();
+                let mut removed_current = false;
+                let mut any_removed = false;
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    if let Some(current) = current_output.as_ref() {
+                        removed_current = state
+                            .output_entries
+                            .iter()
+                            .any(|entry| entry.selected && entry.path == *current);
+                    }
+                    any_removed = state.output_entries.iter().any(|entry| entry.selected);
+                    state.output_entries.retain(|e| !e.selected);
                     if removed_current {
-                        self.clear_loaded_transcript();
-                        self.push_status(
-                            "Removed selected output transcript. Select another output to edit.",
-                        );
+                        state.original_output_path = None;
+                        state.edited_output_path = None;
                     }
                 }
-                if secondary_button(ui, "Select all").clicked() {
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        for e in &mut state.output_entries {
-                            e.selected = true;
-                        }
+                if any_removed {
+                    self.selected_output_row = None;
+                }
+                if removed_current {
+                    self.clear_loaded_transcript();
+                    self.push_status(
+                        "Removed selected output transcript. Select another output to edit.",
+                    );
+                }
+            }
+            if secondary_button(ui, "Select all").clicked() {
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    for e in &mut state.output_entries {
+                        e.selected = true;
                     }
                 }
-                if secondary_button(ui, "Select none").clicked() {
-                    if let Ok(mut state) = self.runtime_state.lock() {
-                        for e in &mut state.output_entries {
-                            e.selected = false;
-                        }
+            }
+            if secondary_button(ui, "Select none").clicked() {
+                if let Ok(mut state) = self.runtime_state.lock() {
+                    for e in &mut state.output_entries {
+                        e.selected = false;
                     }
+                }
+            }
+        });
+    }
+
+    fn ui_transcribe_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Transcribe);
+        engine_panel_frame().show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Mode:");
+                let mut mode = self.settings.mode.clone();
+                egui::ComboBox::from_id_salt("mode_combo_transcribe_page")
+                    .selected_text(mode.clone())
+                    .width(116.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut mode, "transcript".to_string(), "transcript");
+                        ui.selectable_value(&mut mode, "speech".to_string(), "speech");
+                        ui.selectable_value(&mut mode, "subtitle".to_string(), "subtitle");
+                    });
+                if mode != self.settings.mode {
+                    self.settings.mode = mode;
+                    self.queue_save();
+                }
+                ui.label(self.mode_note_text_parity());
+            });
+        });
+
+        ui.add_space(8.0);
+        self.ui_media_inputs_panel(ui, 220.0);
+        self.ui_media_input_actions(ui);
+
+        ui.add_space(8.0);
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Run transcription");
+            let files = self.selected_media_files();
+            ui.label(format!("{} selected file(s)", files.len()));
+            ui.label("Generated and discovered transcript files appear in Review.");
+            ui.label(self.banner_text_parity());
+            ui.horizontal_wrapped(|ui| {
+                if accent_button(ui, "Run selected").clicked() {
+                    self.enqueue_job(files.clone());
+                }
+                if secondary_button(ui, "Review outputs").clicked() {
+                    self.page = AppPage::Review;
                 }
             });
         });
+    }
+
+    fn ui_transcription_parity(&mut self, ui: &mut egui::Ui) {
+        self.ui_output_results_panel(ui, 128.0);
+        self.ui_output_actions(ui);
 
         ui.separator();
         let transcript_panel_height = ui.available_height().max(320.0);
@@ -6529,10 +6532,7 @@ impl UiApp {
             )
             .show(ctx, |ui| match self.page {
                 AppPage::Home => self.ui_home_page(ui),
-                AppPage::Transcribe => {
-                    self.ui_header_parity(ui);
-                    self.ui_transcription_parity(ui);
-                }
+                AppPage::Transcribe => self.ui_transcribe_page(ui),
                 AppPage::Review => self.ui_review_page(ui),
                 AppPage::Live => self.ui_live_parity(ui),
                 AppPage::Chat => self.ui_chat_parity(ui),
