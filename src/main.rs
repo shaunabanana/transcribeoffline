@@ -1004,14 +1004,6 @@ impl AppPage {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum SetupOptionalStep {
-    LiveModel,
-    ChatModel,
-    LiveFolder,
-    Device,
-}
-
 #[derive(Default)]
 struct PlaybackBuffer {
     samples_stereo_f32: Vec<f32>,
@@ -1061,7 +1053,7 @@ struct UiApp {
     runtime_state: Arc<Mutex<RuntimeState>>,
 
     page: AppPage,
-    skipped_setup_optional: HashSet<SetupOptionalStep>,
+    setup_wizard_step: usize,
     tab: usize,
     status: String,
     status_log: Vec<String>,
@@ -1243,6 +1235,17 @@ impl UiApp {
         let live_input_devices = enumerate_input_device_options(&runtime_dir);
         let selected_live_input_device =
             resolve_input_device_index(&live_input_devices, &settings.live_input_device);
+        let setup_wizard_step = if !runtime_missing.is_empty() {
+            0
+        } else if !has_any_installed_whisper_model(&paths) {
+            1
+        } else if !missing_diarization_files(Path::new(settings.diarization_models_dir.trim()))
+            .is_empty()
+        {
+            2
+        } else {
+            0
+        };
 
         let mut app = Self {
             paths,
@@ -1251,7 +1254,7 @@ impl UiApp {
             rx,
             runtime_state,
             page: AppPage::Home,
-            skipped_setup_optional: HashSet::new(),
+            setup_wizard_step,
             tab: 0,
             status: initial_status.clone(),
             status_log: vec![initial_status],
@@ -1825,62 +1828,26 @@ impl UiApp {
         }
         let mut open = true;
         let mut close_clicked = false;
-        let runtime_dir = resolve_runtime_dir(Path::new(self.settings.runtime_dir.trim()));
-        let setup_issues = self.runtime_setup_issues();
-        let unblock_required =
-            self.runtime_missing_on_popup_open && self.runtime_post_install_prompt;
-        let blocking_missing = !self.runtime_missing.is_empty() || !setup_issues.is_empty();
+        let setup_completed = self.setup_wizard_complete();
         let must_keep_open = self.runtime_install_in_progress
             || self.runtime_unblock_in_progress
-            || blocking_missing
-            || unblock_required;
+            || !setup_completed
+            || self.runtime_post_install_prompt;
         egui::Window::new("Runtime Setup Required")
             .collapsible(false)
             .resizable(true)
-            .default_size([980.0, 720.0])
+            .default_size([820.0, 560.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("runtime_setup_required_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.label("Complete required setup once and the app is ready.");
-                        ui.label("* Required: Runtime, Whisper model, Sortformer diarization model.");
-                        let _ = self.ui_runtime_management_controls(ui, &runtime_dir, false);
-                        ui.separator();
-                        self.ui_runtime_device_panel(ui);
-                        self.ui_runtime_models_panel(ui, true);
-                        self.ui_runtime_parameters_panel(ui);
-                        ui.separator();
-                        if unblock_required {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(160, 25, 25),
-                                "Runtime was missing on first open and just installed. Run 'Unblock unsigned runtime' before closing.",
-                            );
-                        }
-                        if !self.runtime_missing.is_empty() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(160, 25, 25),
-                                "Required runtime files are still missing.",
-                            );
-                        }
-                        if !setup_issues.is_empty() {
-                            for issue in &setup_issues {
-                                ui.colored_label(egui::Color32::from_rgb(160, 25, 25), issue);
-                            }
-                        }
-                        ui.horizontal(|ui| {
-                            if accent_button(ui, "Save settings").clicked() {
-                                self.queue_save();
-                                self.persist_if_needed();
-                            }
-                            if must_keep_open {
-                                ui.add_enabled(false, egui::Button::new("Close"));
-                            } else if ui.button("Close").clicked() {
-                                close_clicked = true;
-                            }
-                        });
-                    });
+                self.ui_setup_wizard(ui, true);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if must_keep_open {
+                        ui.add_enabled(false, egui::Button::new("Close"));
+                    } else if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                });
             });
         if must_keep_open {
             open = true;
@@ -1888,12 +1855,10 @@ impl UiApp {
             open = false;
         }
         self.show_runtime_missing_window = open
-            && (!self.runtime_missing.is_empty()
+            && (!setup_completed
                 || self.runtime_install_in_progress
                 || self.runtime_unblock_in_progress
-                || self.runtime_post_install_prompt
-                || !setup_issues.is_empty()
-                || unblock_required);
+                || self.runtime_post_install_prompt);
     }
 
     fn ui_runtime_settings_window(&mut self, ctx: &egui::Context) {
@@ -1902,35 +1867,27 @@ impl UiApp {
         }
         let mut open = self.show_runtime_settings;
         let mut close_clicked = false;
-        let runtime_dir = resolve_runtime_dir(Path::new(self.settings.runtime_dir.trim()));
-        egui::Window::new("Runtime Setup")
+        egui::Window::new("Setup")
             .collapsible(false)
             .resizable(true)
-            .default_size([980.0, 720.0])
+            .default_size([820.0, 560.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .id_salt("runtime_setup_scroll")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.label("Runtime setup: install/unblock runtime, set device, required models, and optional chat model.");
-                        ui.label("* Required: Runtime, Whisper model, Sortformer diarization model.");
-                        let _ = self.ui_runtime_management_controls(ui, &runtime_dir, false);
-                        ui.separator();
-                        self.ui_runtime_device_panel(ui);
-                        self.ui_runtime_models_panel(ui, true);
-                        self.ui_runtime_parameters_panel(ui);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            if accent_button(ui, "Save settings").clicked() {
-                                self.queue_save();
-                                self.persist_if_needed();
-                            }
-                            if ui.button("Close").clicked() {
-                                close_clicked = true;
-                            }
-                        });
-                    });
+                self.ui_setup_wizard(ui, false);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if accent_button(ui, "Save settings").clicked() {
+                        self.queue_save();
+                        self.persist_if_needed();
+                    }
+                    if ui.button("Close").clicked() {
+                        close_clicked = true;
+                    }
+                    if secondary_button(ui, "Advanced runtime settings").clicked() {
+                        self.page = AppPage::Settings;
+                        close_clicked = true;
+                    }
+                });
             });
         if close_clicked {
             open = false;
@@ -2615,7 +2572,8 @@ impl UiApp {
         let mut issues = Vec::new();
         if !self.ensure_live_model_path_for_run() {
             issues.push(
-                "No realtime Voxtral model installed. Download one in Runtime Setup.".to_string(),
+                "No realtime Voxtral model installed. Download one in Settings -> Optional models."
+                    .to_string(),
             );
         }
         let diar_missing =
@@ -2629,7 +2587,7 @@ impl UiApp {
         if issues.is_empty() {
             return true;
         }
-        self.show_runtime_settings = true;
+        self.page = AppPage::Settings;
         self.push_status(&format!(
             "Live transcription blocked: {}",
             issues.join(" | ")
@@ -4223,413 +4181,305 @@ impl UiApp {
         });
     }
 
-    fn setup_step_card<F>(
-        &mut self,
-        ui: &mut egui::Ui,
-        number: usize,
-        title: &str,
-        status: &str,
-        status_color: egui::Color32,
-        detail: &str,
-        actions: F,
-    ) where
-        F: FnOnce(&mut Self, &mut egui::Ui),
-    {
-        engine_panel_frame().show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading(format!("{number}. {title}"));
-                ui.colored_label(status_color, status);
+    fn ui_setup_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Setup);
+        self.ui_setup_wizard(ui, false);
+    }
+
+    fn setup_wizard_complete(&self) -> bool {
+        self.setup_step_complete(0) && self.setup_step_complete(1) && self.setup_step_complete(2)
+    }
+
+    fn setup_step_complete(&self, step: usize) -> bool {
+        match step {
+            0 => self.runtime_missing.is_empty() && !self.runtime_post_install_prompt,
+            1 => has_any_installed_whisper_model(&self.paths),
+            2 => missing_diarization_files(Path::new(self.settings.diarization_models_dir.trim()))
+                .is_empty(),
+            _ => true,
+        }
+    }
+
+    fn setup_step_title(step: usize) -> &'static str {
+        match step {
+            0 => "Runtime",
+            1 => "Transcription",
+            2 => "Diarization",
+            _ => "Setup",
+        }
+    }
+
+    fn setup_step_summary(&self, step: usize) -> &'static str {
+        if self.setup_step_complete(step) {
+            "Done"
+        } else {
+            "Required"
+        }
+    }
+
+    fn ui_setup_wizard(&mut self, ui: &mut egui::Ui, blocking: bool) {
+        self.setup_wizard_step = self.setup_wizard_step.min(2);
+        ui.label("Complete the required setup one screen at a time. Optional live, chat, device, and advanced settings remain available from Settings after setup.");
+        ui.add_space(6.0);
+
+        ui.horizontal_wrapped(|ui| {
+            for step in 0..3 {
+                let selected = self.setup_wizard_step == step;
+                let done = self.setup_step_complete(step);
+                let label = format!(
+                    "{}. {} ({})",
+                    step + 1,
+                    Self::setup_step_title(step),
+                    if done { "done" } else { "required" }
+                );
+                let response = ui.add(egui::Button::new(label).selected(selected));
+                if response.clicked() {
+                    self.setup_wizard_step = step;
+                }
+            }
+        });
+
+        ui.separator();
+        let body_height = (ui.available_height() - 54.0).max(260.0);
+        egui::ScrollArea::vertical()
+            .id_salt(("setup_wizard_body", blocking, self.setup_wizard_step))
+            .max_height(body_height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| match self.setup_wizard_step {
+                0 => self.ui_setup_runtime_step(ui),
+                1 => self.ui_setup_transcription_step(ui),
+                2 => self.ui_setup_diarization_step(ui),
+                _ => {}
             });
-            ui.label(detail);
-            ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| actions(self, ui));
+
+        ui.separator();
+        self.ui_setup_wizard_footer(ui);
+    }
+
+    fn ui_setup_step_header(&self, ui: &mut egui::Ui, step: usize, detail: &str) {
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(format!("{}. {}", step + 1, Self::setup_step_title(step)));
+            let color = if self.setup_step_complete(step) {
+                egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
+            } else {
+                egui::Color32::from_rgb(160, 25, 25)
+            };
+            ui.colored_label(color, self.setup_step_summary(step));
+        });
+        ui.label(detail);
+        ui.separator();
+    }
+
+    fn ui_setup_runtime_step(&mut self, ui: &mut egui::Ui) {
+        self.ui_setup_step_header(
+            ui,
+            0,
+            "Install or repair the local engine runtime, then unblock it if your operating system marked it as unsigned or quarantined.",
+        );
+        let runtime_dir = resolve_runtime_dir(Path::new(self.settings.runtime_dir.trim()));
+        let runtime_ready = self.runtime_missing.is_empty();
+        ui.label(format!("Runtime directory: {}", runtime_dir.display()));
+        ui.add_space(4.0);
+
+        if runtime_ready {
+            ui.colored_label(
+                egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                "Runtime files were found.",
+            );
+        } else {
+            ui.colored_label(
+                egui::Color32::from_rgb(160, 25, 25),
+                "Runtime is missing or incomplete.",
+            );
+            for item in &self.runtime_missing {
+                ui.label(format!("- {item}"));
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            if self.runtime_busy() {
+                ui.spinner();
+                ui.label("Runtime maintenance in progress...");
+            } else {
+                let install_label = if runtime_ready {
+                    "Install/Repair runtime"
+                } else {
+                    "Install/Repair runtime (required)"
+                };
+                let install_clicked = if runtime_ready {
+                    secondary_button(ui, install_label).clicked()
+                } else {
+                    warning_button(ui, install_label).clicked()
+                };
+                if install_clicked {
+                    self.start_runtime_install();
+                }
+                if secondary_button(ui, "Recheck").clicked() {
+                    self.refresh_runtime_state();
+                }
+            }
+            if ui.button("Open runtime folder").clicked() {
+                let _ = open::that(&runtime_dir);
+            }
+        });
+
+        if runtime_ready && self.runtime_post_install_prompt {
+            ui.separator();
+            engine_panel_frame().show(ui, |ui| {
+                ui.heading("Unblock required");
+                ui.colored_label(
+                    egui::Color32::from_rgb(160, 25, 25),
+                    "The runtime was installed or repaired. Run the unblock step, then Recheck.",
+                );
+                ui.horizontal_wrapped(|ui| {
+                    if self.runtime_busy() {
+                        ui.add_enabled(false, egui::Button::new("Unblock unsigned runtime"));
+                    } else if warning_button(ui, "Unblock unsigned runtime (required)").clicked() {
+                        self.start_runtime_unblock();
+                    }
+                    if secondary_button(ui, "Recheck").clicked() {
+                        self.refresh_runtime_state();
+                    }
+                });
+            });
+        } else if runtime_ready {
+            ui.separator();
+            ui.label("No unblock step is currently pending.");
+        }
+    }
+
+    fn ui_setup_transcription_step(&mut self, ui: &mut egui::Ui) {
+        self.ui_setup_step_header(
+            ui,
+            1,
+            "Download a Whisper model for local file transcription. You can change models later from Setup or Settings.",
+        );
+        let whisper_ready = has_any_installed_whisper_model(&self.paths);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Whisper model:");
+            egui::ComboBox::from_id_salt("wizard_whisper_model_combo")
+                .selected_text(
+                    WHISPER_MODELS
+                        .get(self.whisper_models)
+                        .map(|m| whisper_combo_label(&self.paths, m))
+                        .unwrap_or_else(|| "Select model".to_string()),
+                )
+                .show_ui(ui, |ui| {
+                    for (idx, spec) in WHISPER_MODELS.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.whisper_models,
+                            idx,
+                            whisper_combo_label(&self.paths, spec),
+                        );
+                    }
+                });
+        });
+        if let Some(spec) = WHISPER_MODELS.get(self.whisper_models) {
+            let selected_path = whisper_model_dest_path(&self.paths, spec.file_name)
+                .display()
+                .to_string();
+            if self.settings.whisper_model != selected_path {
+                self.settings.whisper_model = selected_path;
+                self.queue_save();
+            }
+            ui.label(format!("Download size: {}", human_model_size(spec.size_bytes)));
+            model_repo_license_note(ui, spec.repo_label, spec.repo_url, "Apache-2.0");
+        }
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let clicked = if whisper_ready {
+                secondary_button(ui, "Download selected").clicked()
+            } else {
+                warning_button(ui, "Download selected (required)").clicked()
+            };
+            if clicked {
+                self.do_download_whisper();
+            }
+            if ui.button("Open models folder").clicked() {
+                let _ = open::that(self.paths.models_dir.clone());
+            }
         });
     }
 
-    fn optional_step_skipped(&self, step: SetupOptionalStep) -> bool {
-        self.skipped_setup_optional.contains(&step)
+    fn ui_setup_diarization_step(&mut self, ui: &mut egui::Ui) {
+        self.ui_setup_step_header(
+            ui,
+            2,
+            "Download the Sortformer diarization model required for speaker-labelled transcripts.",
+        );
+        let missing = missing_diarization_files(Path::new(self.settings.diarization_models_dir.trim()));
+        if missing.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                "Sortformer model is installed.",
+            );
+        } else {
+            ui.colored_label(
+                egui::Color32::from_rgb(160, 25, 25),
+                format!("Missing required file: {}", missing.join(", ")),
+            );
+        }
+        ui.label(format!("Download size: {}", human_model_size(DIARIZATION_MODEL_SIZE_BYTES)));
+        model_repo_license_note(
+            ui,
+            "openresearchtools/diar_streaming_sortformer_4spk-v2.1-gguf",
+            DIARIZATION_REPO,
+            "NVIDIA Open Model License",
+        );
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let clicked = if missing.is_empty() {
+                secondary_button(ui, "Download Sortformer model").clicked()
+            } else {
+                warning_button(ui, "Download Sortformer model (required)").clicked()
+            };
+            if clicked {
+                self.do_download_diarization();
+            }
+            if ui.button("Open diarization folder").clicked() {
+                let _ = open::that(self.paths.diarization_models_dir.clone());
+            }
+        });
     }
 
-    fn chat_model_ready(&self) -> bool {
-        let configured = self.settings.chat_model.trim();
-        (!configured.is_empty() && Path::new(configured).exists())
-            || has_any_installed_chat_model(&self.paths)
-    }
+    fn ui_setup_wizard_footer(&mut self, ui: &mut egui::Ui) {
+        let current_complete = self.setup_step_complete(self.setup_wizard_step);
+        ui.horizontal(|ui| {
+            if self.setup_wizard_step == 0 {
+                ui.add_enabled(false, egui::Button::new("Back"));
+            } else if secondary_button(ui, "Back").clicked() {
+                self.setup_wizard_step = self.setup_wizard_step.saturating_sub(1);
+            }
 
-    fn ui_setup_page(&mut self, ui: &mut egui::Ui) {
-        self.ui_page_heading(ui, AppPage::Setup);
-        let runtime_dir = resolve_runtime_dir(Path::new(self.settings.runtime_dir.trim()));
-        let runtime_ready = self.runtime_missing.is_empty();
-        let unblock_ready = runtime_ready && !self.runtime_post_install_prompt;
-        let whisper_ready = has_any_installed_whisper_model(&self.paths);
-        let diarization_missing = missing_diarization_files(Path::new(
-            self.settings.diarization_models_dir.trim(),
-        ));
-        let diarization_ready = diarization_missing.is_empty();
-        let mandatory_ready = runtime_ready && unblock_ready && whisper_ready && diarization_ready;
-
-        egui::ScrollArea::vertical()
-            .id_salt("setup_page_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label("Complete the required setup steps in order. Optional features can be configured afterwards or skipped for now.");
-                ui.separator();
-
-                self.setup_step_card(
-                    ui,
-                    1,
-                    "Install or repair runtime",
-                    if runtime_ready { "Done" } else { "Required" },
-                    if runtime_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if self.setup_wizard_step < 2 {
+                    let next = if current_complete {
+                        accent_button(ui, "Next")
                     } else {
-                        egui::Color32::from_rgb(160, 25, 25)
-                    },
-                    "The local engine runtime is required for transcription, diarization, chat, playback checks, and live capture.",
-                    |app, ui| {
-                        if app.runtime_busy() {
-                            ui.spinner();
-                            ui.label("Runtime maintenance in progress...");
-                        } else {
-                            let install_label = if app.runtime_missing.is_empty() {
-                                "Install/Repair runtime"
-                            } else {
-                                "Install/Repair runtime (required)"
-                            };
-                            let clicked = if app.runtime_missing.is_empty() {
-                                secondary_button(ui, install_label).clicked()
-                            } else {
-                                warning_button(ui, install_label).clicked()
-                            };
-                            if clicked {
-                                app.start_runtime_install();
-                            }
-                            if secondary_button(ui, "Recheck").clicked() {
-                                app.refresh_runtime_state();
-                            }
-                        }
-                        if ui.button("Open runtime folder").clicked() {
-                            let _ = open::that(&runtime_dir);
-                        }
-                    },
-                );
-
-                self.setup_step_card(
-                    ui,
-                    2,
-                    "Unblock unsigned runtime",
-                    if unblock_ready {
-                        "Done"
-                    } else if runtime_ready {
-                        "Required"
+                        ui.add_enabled(false, egui::Button::new("Next"))
+                    };
+                    if next.clicked() {
+                        self.setup_wizard_step += 1;
+                    }
+                } else {
+                    let finish = if self.setup_wizard_complete() {
+                        accent_button(ui, "Finish setup")
                     } else {
-                        "Waiting for runtime"
-                    },
-                    if unblock_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
-                    } else if runtime_ready {
-                        egui::Color32::from_rgb(160, 25, 25)
-                    } else {
-                        egui::Color32::from_rgb(120, 120, 120)
-                    },
-                    "Run this after runtime installation or repair. Without this step, operating-system security flags can prevent runtime components from loading.",
-                    |app, ui| {
-                        let can_unblock = runtime_ready && !app.runtime_busy();
-                        if can_unblock {
-                            let clicked = if app.runtime_post_install_prompt {
-                                warning_button(ui, "Unblock unsigned runtime (required)").clicked()
-                            } else {
-                                secondary_button(ui, "Run unblock script").clicked()
-                            };
-                            if clicked {
-                                app.start_runtime_unblock();
-                            }
-                            if secondary_button(ui, "Recheck").clicked() {
-                                app.refresh_runtime_state();
-                            }
-                        } else {
-                            ui.add_enabled(false, egui::Button::new("Unblock unsigned runtime"));
-                            ui.add_enabled(false, egui::Button::new("Recheck"));
-                        }
-                    },
-                );
-
-                self.setup_step_card(
-                    ui,
-                    3,
-                    "Download Whisper model",
-                    if whisper_ready { "Done" } else { "Required" },
-                    if whisper_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
-                    } else {
-                        egui::Color32::from_rgb(160, 25, 25)
-                    },
-                    "Whisper powers local file transcription. Choose a model, then download it into the managed model store.",
-                    |app, ui| {
-                        egui::ComboBox::from_id_salt("setup_whisper_model_combo")
-                            .selected_text(
-                                WHISPER_MODELS
-                                    .get(app.whisper_models)
-                                    .map(|m| whisper_combo_label(&app.paths, m))
-                                    .unwrap_or_else(|| "Select model".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (idx, spec) in WHISPER_MODELS.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut app.whisper_models,
-                                        idx,
-                                        whisper_combo_label(&app.paths, spec),
-                                    );
-                                }
-                            });
-                        if let Some(spec) = WHISPER_MODELS.get(app.whisper_models) {
-                            let selected_path = whisper_model_dest_path(&app.paths, spec.file_name)
-                                .display()
-                                .to_string();
-                            if app.settings.whisper_model != selected_path {
-                                app.settings.whisper_model = selected_path;
-                                app.queue_save();
-                            }
-                        }
-                        let clicked = if whisper_ready {
-                            secondary_button(ui, "Download selected").clicked()
-                        } else {
-                            warning_button(ui, "Download selected (required)").clicked()
-                        };
-                        if clicked {
-                            app.do_download_whisper();
-                        }
-                        if ui.button("Open models folder").clicked() {
-                            let _ = open::that(app.paths.models_dir.clone());
-                        }
-                    },
-                );
-
-                self.setup_step_card(
-                    ui,
-                    4,
-                    "Download Sortformer diarization model",
-                    if diarization_ready { "Done" } else { "Required" },
-                    if diarization_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
-                    } else {
-                        egui::Color32::from_rgb(160, 25, 25)
-                    },
-                    "Sortformer is required for transcript-mode speaker diarization and live diarization when enabled.",
-                    |app, ui| {
-                        let clicked = if diarization_ready {
-                            secondary_button(ui, "Download Sortformer model").clicked()
-                        } else {
-                            warning_button(ui, "Download Sortformer model (required)").clicked()
-                        };
-                        if clicked {
-                            app.do_download_diarization();
-                        }
-                        if ui.button("Open diarization folder").clicked() {
-                            let _ = open::that(app.paths.diarization_models_dir.clone());
-                        }
-                        if !diarization_missing.is_empty() {
-                            ui.label(format!("Missing: {}", diarization_missing.join(", ")));
-                        }
-                    },
-                );
-
-                ui.separator();
-                if !mandatory_ready {
-                    engine_panel_frame().show(ui, |ui| {
-                        ui.heading("Optional setup locked");
-                        ui.label("Complete the required steps above first. Execution device selection has a safe default and does not need manual configuration.");
-                    });
-                    return;
+                        ui.add_enabled(false, egui::Button::new("Finish setup"))
+                    };
+                    if finish.clicked() {
+                        self.show_runtime_missing_window = false;
+                        self.page = AppPage::Home;
+                        self.push_status("Required setup complete.");
+                    }
                 }
 
-                ui.heading("Optional setup");
-                ui.label("These features can be configured now or skipped. You can revisit them from Home or Setup later.");
-
-                let live_ready = has_any_installed_live_model(&self.paths);
-                let live_skipped = self.optional_step_skipped(SetupOptionalStep::LiveModel);
-                self.setup_step_card(
-                    ui,
-                    5,
-                    "Enable live transcription",
-                    if live_ready {
-                        "Done"
-                    } else if live_skipped {
-                        "Skipped"
-                    } else {
-                        "Optional"
-                    },
-                    if live_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
-                    } else {
-                        egui::Color32::from_rgb(0x9A, 0x67, 0x00)
-                    },
-                    "Download a Voxtral realtime model if you want microphone transcription. File transcription works without it.",
-                    |app, ui| {
-                        egui::ComboBox::from_id_salt("setup_live_model_combo")
-                            .selected_text(
-                                LIVE_TRANSCRIPTION_MODELS
-                                    .get(app.live_models)
-                                    .map(|m| live_model_combo_label(&app.paths, m))
-                                    .unwrap_or_else(|| "Select model".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (idx, spec) in LIVE_TRANSCRIPTION_MODELS.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut app.live_models,
-                                        idx,
-                                        live_model_combo_label(&app.paths, spec),
-                                    );
-                                }
-                            });
-                        if accent_button(ui, "Download selected").clicked() {
-                            app.do_download_live_model();
-                            app.skipped_setup_optional.remove(&SetupOptionalStep::LiveModel);
-                        }
-                        if live_skipped {
-                            if ui.button("Review this step").clicked() {
-                                app.skipped_setup_optional.remove(&SetupOptionalStep::LiveModel);
-                            }
-                        } else if ui.button("Skip for now").clicked() {
-                            app.skipped_setup_optional.insert(SetupOptionalStep::LiveModel);
-                        }
-                    },
-                );
-
-                let chat_ready = self.chat_model_ready();
-                let chat_skipped = self.optional_step_skipped(SetupOptionalStep::ChatModel);
-                self.setup_step_card(
-                    ui,
-                    6,
-                    "Enable transcript chat and anonymise",
-                    if chat_ready {
-                        "Done"
-                    } else if chat_skipped {
-                        "Skipped"
-                    } else {
-                        "Optional"
-                    },
-                    if chat_ready {
-                        egui::Color32::from_rgb(0x2E, 0x7D, 0x32)
-                    } else {
-                        egui::Color32::from_rgb(0x9A, 0x67, 0x00)
-                    },
-                    "Download the suggested Qwen model or choose another GGUF model to enable transcript Q&A and Anonymise (beta).",
-                    |app, ui| {
-                        egui::ComboBox::from_id_salt("setup_chat_model_combo")
-                            .selected_text(
-                                CHAT_MODELS
-                                    .get(app.chat_models)
-                                    .map(|m| chat_model_combo_label(&app.paths, m))
-                                    .unwrap_or_else(|| "Select model".to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (idx, spec) in CHAT_MODELS.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut app.chat_models,
-                                        idx,
-                                        chat_model_combo_label(&app.paths, spec),
-                                    );
-                                }
-                            });
-                        if accent_button(ui, "Download selected").clicked() {
-                            app.do_download_chat_model();
-                            app.skipped_setup_optional.remove(&SetupOptionalStep::ChatModel);
-                        }
-                        if secondary_button(ui, "Choose GGUF").clicked() {
-                            app.do_pick_chat_model();
-                            app.skipped_setup_optional.remove(&SetupOptionalStep::ChatModel);
-                        }
-                        if chat_skipped {
-                            if ui.button("Review this step").clicked() {
-                                app.skipped_setup_optional.remove(&SetupOptionalStep::ChatModel);
-                            }
-                        } else if ui.button("Skip for now").clicked() {
-                            app.skipped_setup_optional.insert(SetupOptionalStep::ChatModel);
-                        }
-                    },
-                );
-
-                let live_folder = self.resolved_live_sessions_output_dir();
-                let live_folder_skipped = self.optional_step_skipped(SetupOptionalStep::LiveFolder);
-                self.setup_step_card(
-                    ui,
-                    7,
-                    "Choose live session folder",
-                    if live_folder_skipped { "Skipped" } else { "Default ready" },
-                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
-                    "The default save folder works immediately. Change it only if you want live recordings and transcripts somewhere else.",
-                    |app, ui| {
-                        ui.label(format!("Folder: {}", live_folder.display()));
-                        if secondary_button(ui, "Choose folder").clicked() {
-                            app.do_pick_live_sessions_output_dir();
-                            app.skipped_setup_optional.remove(&SetupOptionalStep::LiveFolder);
-                        }
-                        if ui.button("Open folder").clicked() {
-                            app.open_live_sessions_output_dir();
-                        }
-                        if live_folder_skipped {
-                            if ui.button("Review this step").clicked() {
-                                app.skipped_setup_optional.remove(&SetupOptionalStep::LiveFolder);
-                            }
-                        } else if ui.button("Skip for now").clicked() {
-                            app.skipped_setup_optional.insert(SetupOptionalStep::LiveFolder);
-                        }
-                    },
-                );
-
-                let selected_device_label = self
-                    .audio_devices
-                    .get(self.selected_audio_device)
-                    .map(|o| o.label.clone())
-                    .unwrap_or_else(|| AUDIO_DEVICE_CPU_LABEL.to_string());
-                let device_skipped = self.optional_step_skipped(SetupOptionalStep::Device);
-                self.setup_step_card(
-                    ui,
-                    8,
-                    "Review execution device",
-                    if device_skipped { "Skipped" } else { "Default ready" },
-                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
-                    "CPU/GPU selection has a safe default. Change it only if you want to force a specific execution device.",
-                    |app, ui| {
-                        ui.label(format!("Current: {selected_device_label}"));
-                        let before = app.selected_audio_device;
-                        egui::ComboBox::from_id_salt("setup_device_combo")
-                            .selected_text(
-                                app.audio_devices
-                                    .get(app.selected_audio_device)
-                                    .map(|o| o.label.clone())
-                                    .unwrap_or_else(|| AUDIO_DEVICE_CPU_LABEL.to_string()),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (idx, opt) in app.audio_devices.iter().enumerate() {
-                                    ui.selectable_value(&mut app.selected_audio_device, idx, &opt.label);
-                                }
-                            });
-                        if before != app.selected_audio_device {
-                            app.apply_audio_device();
-                            app.skipped_setup_optional.remove(&SetupOptionalStep::Device);
-                        }
-                        if device_skipped {
-                            if ui.button("Review this step").clicked() {
-                                app.skipped_setup_optional.remove(&SetupOptionalStep::Device);
-                            }
-                        } else if ui.button("Skip for now").clicked() {
-                            app.skipped_setup_optional.insert(SetupOptionalStep::Device);
-                        }
-                    },
-                );
-
-                ui.separator();
-                ui.collapsing("Detailed setup controls", |ui| {
-                    ui.label("Advanced controls remain available here for repair, manual model management, and runtime tuning.");
-                    let _ = self.ui_runtime_management_controls(ui, &runtime_dir, false);
-                    ui.separator();
-                    self.ui_runtime_models_panel(ui, true);
-                    self.ui_runtime_device_panel(ui);
-                    self.ui_runtime_parameters_panel(ui);
-                });
+                if !current_complete {
+                    ui.label("Complete this step to continue.");
+                }
             });
+        });
     }
 
     fn ui_review_page(&mut self, ui: &mut egui::Ui) {
@@ -4716,7 +4566,7 @@ impl UiApp {
                 if secondary_button(ui, "Editing settings").clicked() {
                     self.show_editing_settings = true;
                 }
-                if secondary_button(ui, "Runtime setup window").clicked() {
+                if secondary_button(ui, "Setup wizard window").clicked() {
                     self.show_runtime_settings = true;
                 }
             });
@@ -4739,6 +4589,18 @@ impl UiApp {
                 }
             });
         });
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical()
+            .id_salt("settings_optional_runtime_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.collapsing("Optional models, device, and advanced runtime settings", |ui| {
+                    ui.label("These settings are not part of the required setup wizard. Use them for live transcription, transcript chat/anonymise, or manual CPU/GPU tuning.");
+                    self.ui_runtime_models_panel(ui, true);
+                    self.ui_runtime_device_panel(ui);
+                    self.ui_runtime_parameters_panel(ui);
+                });
+            });
     }
 
     fn ui_header_parity(&mut self, ui: &mut egui::Ui) {
