@@ -1235,16 +1235,17 @@ impl UiApp {
         let live_input_devices = enumerate_input_device_options(&runtime_dir);
         let selected_live_input_device =
             resolve_input_device_index(&live_input_devices, &settings.live_input_device);
+        let whisper_ready = !settings.whisper_model.trim().is_empty()
+            && Path::new(settings.whisper_model.trim()).exists()
+            || has_any_installed_whisper_model(&paths);
+        let diarization_ready =
+            missing_diarization_files(Path::new(settings.diarization_models_dir.trim())).is_empty();
         let setup_wizard_step = if !runtime_missing.is_empty() {
             0
-        } else if !has_any_installed_whisper_model(&paths) {
+        } else if !whisper_ready || !diarization_ready {
             1
-        } else if !missing_diarization_files(Path::new(settings.diarization_models_dir.trim()))
-            .is_empty()
-        {
-            2
         } else {
-            0
+            2
         };
 
         let mut app = Self {
@@ -1836,7 +1837,7 @@ impl UiApp {
         egui::Window::new("Runtime Setup Required")
             .collapsible(false)
             .resizable(true)
-            .default_size([820.0, 560.0])
+            .default_size([740.0, 480.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 self.ui_setup_wizard(ui, true);
@@ -1870,7 +1871,7 @@ impl UiApp {
         egui::Window::new("Setup")
             .collapsible(false)
             .resizable(true)
-            .default_size([820.0, 560.0])
+            .default_size([740.0, 480.0])
             .open(&mut open)
             .show(ctx, |ui| {
                 self.ui_setup_wizard(ui, false);
@@ -3100,6 +3101,73 @@ impl UiApp {
         }
     }
 
+    fn do_pick_whisper_model(&mut self) {
+        let models_dir = self.paths.models_dir.clone();
+        if let Some(path) = self.safe_dialog_call("Select Whisper model file", || {
+            FileDialog::new()
+                .set_title("Select Whisper model file")
+                .set_directory(models_dir)
+                .add_filter("Whisper model", &["bin"])
+                .pick_file()
+        }) {
+            self.settings.whisper_model = path.display().to_string();
+            self.whisper_models = select_whisper_model_index(&self.settings.whisper_model);
+            self.queue_save();
+        }
+    }
+
+    fn do_pick_diarization_models_dir(&mut self) {
+        let current_dir = if self.settings.diarization_models_dir.trim().is_empty() {
+            self.paths.diarization_models_dir.clone()
+        } else {
+            PathBuf::from(self.settings.diarization_models_dir.trim())
+        };
+        let dialog_dir = if current_dir.is_dir() {
+            current_dir
+        } else {
+            self.paths.models_dir.clone()
+        };
+        if let Some(path) = self.safe_dialog_call("Select diarization model folder", || {
+            FileDialog::new()
+                .set_title("Select folder containing Sortformer diarization model")
+                .set_directory(dialog_dir)
+                .pick_folder()
+        }) {
+            self.settings.diarization_models_dir = path.display().to_string();
+            self.queue_save();
+        }
+    }
+
+    fn recheck_setup_model_paths(&mut self) {
+        let mut changed = false;
+        if self.settings.whisper_model.trim().is_empty()
+            || !Path::new(self.settings.whisper_model.trim()).exists()
+        {
+            if let Some(spec) = first_installed_whisper_model(&self.paths) {
+                let path = whisper_model_dest_path(&self.paths, spec.file_name);
+                self.settings.whisper_model = path.display().to_string();
+                self.whisper_models = select_whisper_model_index(&self.settings.whisper_model);
+                changed = true;
+            }
+        }
+
+        let configured_diar_dir = Path::new(self.settings.diarization_models_dir.trim());
+        if !missing_diarization_files(configured_diar_dir).is_empty() {
+            let default_dir = default_diarization_models_dir(&self.paths);
+            if missing_diarization_files(&default_dir).is_empty() {
+                self.settings.diarization_models_dir = default_dir.display().to_string();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.queue_save();
+            self.push_status("Setup model paths rechecked and updated.");
+        } else {
+            self.push_status("Setup model paths rechecked.");
+        }
+    }
+
     fn do_start_chat(&mut self) {
         if self.is_chatting {
             return;
@@ -4187,24 +4255,33 @@ impl UiApp {
     }
 
     fn setup_wizard_complete(&self) -> bool {
-        self.setup_step_complete(0) && self.setup_step_complete(1) && self.setup_step_complete(2)
+        self.setup_step_complete(0) && self.setup_step_complete(1)
     }
 
     fn setup_step_complete(&self, step: usize) -> bool {
         match step {
             0 => self.runtime_missing.is_empty() && !self.runtime_post_install_prompt,
-            1 => has_any_installed_whisper_model(&self.paths),
-            2 => missing_diarization_files(Path::new(self.settings.diarization_models_dir.trim()))
-                .is_empty(),
+            1 => self.whisper_model_ready() && self.diarization_model_ready(),
+            2 => true,
             _ => true,
         }
+    }
+
+    fn whisper_model_ready(&self) -> bool {
+        let configured = self.settings.whisper_model.trim();
+        (!configured.is_empty() && Path::new(configured).exists())
+            || has_any_installed_whisper_model(&self.paths)
+    }
+
+    fn diarization_model_ready(&self) -> bool {
+        missing_diarization_files(Path::new(self.settings.diarization_models_dir.trim())).is_empty()
     }
 
     fn setup_step_title(step: usize) -> &'static str {
         match step {
             0 => "Runtime",
-            1 => "Transcription",
-            2 => "Diarization",
+            1 => "Download models",
+            2 => "Optional setup",
             _ => "Setup",
         }
     }
@@ -4219,23 +4296,16 @@ impl UiApp {
 
     fn ui_setup_wizard(&mut self, ui: &mut egui::Ui, blocking: bool) {
         self.setup_wizard_step = self.setup_wizard_step.min(2);
-        ui.label("Complete the required setup one screen at a time. Optional live, chat, device, and advanced settings remain available from Settings after setup.");
+        ui.label("Complete the required setup one screen at a time. Optional live, chat, device, and advanced settings can be configured at the end or from Settings later.");
         ui.add_space(6.0);
 
         ui.horizontal_wrapped(|ui| {
-            for step in 0..3 {
-                let selected = self.setup_wizard_step == step;
-                let done = self.setup_step_complete(step);
-                let label = format!(
-                    "{}. {} ({})",
-                    step + 1,
-                    Self::setup_step_title(step),
-                    if done { "done" } else { "required" }
-                );
-                let response = ui.add(egui::Button::new(label).selected(selected));
-                if response.clicked() {
-                    self.setup_wizard_step = step;
-                }
+            ui.strong(format!("Step {} of 3", self.setup_wizard_step + 1));
+            ui.label(Self::setup_step_title(self.setup_wizard_step));
+            if self.setup_step_complete(self.setup_wizard_step) {
+                ui.colored_label(egui::Color32::from_rgb(0x2E, 0x7D, 0x32), "Complete");
+            } else {
+                ui.colored_label(egui::Color32::from_rgb(160, 25, 25), "Required");
             }
         });
 
@@ -4247,8 +4317,8 @@ impl UiApp {
             .auto_shrink([false, false])
             .show(ui, |ui| match self.setup_wizard_step {
                 0 => self.ui_setup_runtime_step(ui),
-                1 => self.ui_setup_transcription_step(ui),
-                2 => self.ui_setup_diarization_step(ui),
+                1 => self.ui_setup_models_step(ui),
+                2 => self.ui_setup_optional_step(ui),
                 _ => {}
             });
 
@@ -4349,98 +4419,173 @@ impl UiApp {
         }
     }
 
-    fn ui_setup_transcription_step(&mut self, ui: &mut egui::Ui) {
+    fn ui_setup_models_step(&mut self, ui: &mut egui::Ui) {
         self.ui_setup_step_header(
             ui,
             1,
-            "Download a Whisper model for local file transcription. You can change models later from Setup or Settings.",
+            "Download or select the required transcription and diarization models. Downloads can run in parallel; progress appears here and in the activity bar.",
         );
-        let whisper_ready = has_any_installed_whisper_model(&self.paths);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Whisper model:");
-            egui::ComboBox::from_id_salt("wizard_whisper_model_combo")
-                .selected_text(
-                    WHISPER_MODELS
-                        .get(self.whisper_models)
-                        .map(|m| whisper_combo_label(&self.paths, m))
-                        .unwrap_or_else(|| "Select model".to_string()),
-                )
-                .show_ui(ui, |ui| {
-                    for (idx, spec) in WHISPER_MODELS.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut self.whisper_models,
-                            idx,
-                            whisper_combo_label(&self.paths, spec),
-                        );
-                    }
-                });
-        });
-        if let Some(spec) = WHISPER_MODELS.get(self.whisper_models) {
-            let selected_path = whisper_model_dest_path(&self.paths, spec.file_name)
-                .display()
-                .to_string();
-            if self.settings.whisper_model != selected_path {
-                self.settings.whisper_model = selected_path;
-                self.queue_save();
+
+        self.ui_setup_download_status(ui);
+
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Transcription model (Whisper)");
+            if self.whisper_model_ready() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                    "Whisper model is available.",
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(160, 25, 25),
+                    "No Whisper model found yet.",
+                );
             }
-            ui.label(format!("Download size: {}", human_model_size(spec.size_bytes)));
-            model_repo_license_note(ui, spec.repo_label, spec.repo_url, "Apache-2.0");
-        }
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Suggested model:");
+                egui::ComboBox::from_id_salt("wizard_whisper_model_combo")
+                    .selected_text(
+                        WHISPER_MODELS
+                            .get(self.whisper_models)
+                            .map(|m| whisper_combo_label(&self.paths, m))
+                            .unwrap_or_else(|| "Select model".to_string()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for (idx, spec) in WHISPER_MODELS.iter().enumerate() {
+                            ui.selectable_value(
+                                &mut self.whisper_models,
+                                idx,
+                                whisper_combo_label(&self.paths, spec),
+                            );
+                        }
+                    });
+            });
+            if let Some(spec) = WHISPER_MODELS.get(self.whisper_models) {
+                let selected_path = whisper_model_dest_path(&self.paths, spec.file_name)
+                    .display()
+                    .to_string();
+                if self.settings.whisper_model != selected_path
+                    && Path::new(&selected_path).exists()
+                {
+                    self.settings.whisper_model = selected_path;
+                    self.queue_save();
+                }
+                ui.label(format!("Download size: {}", human_model_size(spec.size_bytes)));
+                model_repo_license_note(ui, spec.repo_label, spec.repo_url, "Apache-2.0");
+            }
+            ui.horizontal_wrapped(|ui| {
+                let clicked = if self.whisper_model_ready() {
+                    secondary_button(ui, "Download selected").clicked()
+                } else {
+                    warning_button(ui, "Download selected (required)").clicked()
+                };
+                if clicked {
+                    self.do_download_whisper();
+                }
+                if secondary_button(ui, "Select model file").clicked() {
+                    self.do_pick_whisper_model();
+                }
+                if ui.button("Open models folder").clicked() {
+                    let _ = open::that(self.paths.models_dir.clone());
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Diarization model (Sortformer)");
+            let missing = missing_diarization_files(Path::new(
+                self.settings.diarization_models_dir.trim(),
+            ));
+            if missing.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
+                    "Sortformer model is available.",
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(160, 25, 25),
+                    format!("Missing required file: {}", missing.join(", ")),
+                );
+            }
+            ui.label(format!(
+                "Folder: {}",
+                self.settings.diarization_models_dir.trim()
+            ));
+            ui.label(format!(
+                "Download size: {}",
+                human_model_size(DIARIZATION_MODEL_SIZE_BYTES)
+            ));
+            model_repo_license_note(
+                ui,
+                "openresearchtools/diar_streaming_sortformer_4spk-v2.1-gguf",
+                DIARIZATION_REPO,
+                "NVIDIA Open Model License",
+            );
+            ui.horizontal_wrapped(|ui| {
+                let clicked = if missing.is_empty() {
+                    secondary_button(ui, "Download Sortformer model").clicked()
+                } else {
+                    warning_button(ui, "Download Sortformer model (required)").clicked()
+                };
+                if clicked {
+                    self.do_download_diarization();
+                }
+                if secondary_button(ui, "Select model folder").clicked() {
+                    self.do_pick_diarization_models_dir();
+                }
+                if ui.button("Open diarization folder").clicked() {
+                    let _ = open::that(self.paths.diarization_models_dir.clone());
+                }
+            });
+        });
+
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            let clicked = if whisper_ready {
-                secondary_button(ui, "Download selected").clicked()
-            } else {
-                warning_button(ui, "Download selected (required)").clicked()
-            };
-            if clicked {
-                self.do_download_whisper();
-            }
-            if ui.button("Open models folder").clicked() {
-                let _ = open::that(self.paths.models_dir.clone());
+            if secondary_button(ui, "Recheck existing models").clicked() {
+                self.recheck_setup_model_paths();
             }
         });
     }
 
-    fn ui_setup_diarization_step(&mut self, ui: &mut egui::Ui) {
+    fn ui_setup_optional_step(&mut self, ui: &mut egui::Ui) {
         self.ui_setup_step_header(
             ui,
             2,
-            "Download the Sortformer diarization model required for speaker-labelled transcripts.",
+            "Optional features can be configured now or later. The app is ready for file transcription once runtime and required models are complete.",
         );
-        let missing = missing_diarization_files(Path::new(self.settings.diarization_models_dir.trim()));
-        if missing.is_empty() {
-            ui.colored_label(
-                egui::Color32::from_rgb(0x2E, 0x7D, 0x32),
-                "Sortformer model is installed.",
-            );
-        } else {
-            ui.colored_label(
-                egui::Color32::from_rgb(160, 25, 25),
-                format!("Missing required file: {}", missing.join(", ")),
-            );
-        }
-        ui.label(format!("Download size: {}", human_model_size(DIARIZATION_MODEL_SIZE_BYTES)));
-        model_repo_license_note(
-            ui,
-            "openresearchtools/diar_streaming_sortformer_4spk-v2.1-gguf",
-            DIARIZATION_REPO,
-            "NVIDIA Open Model License",
-        );
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            let clicked = if missing.is_empty() {
-                secondary_button(ui, "Download Sortformer model").clicked()
-            } else {
-                warning_button(ui, "Download Sortformer model (required)").clicked()
-            };
-            if clicked {
-                self.do_download_diarization();
-            }
-            if ui.button("Open diarization folder").clicked() {
-                let _ = open::that(self.paths.diarization_models_dir.clone());
-            }
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Optional setup");
+            ui.label("Live transcription requires a Voxtral realtime model. Transcript chat and Anonymise require a chat GGUF model. CPU/GPU device selection has a safe default.");
+            ui.horizontal_wrapped(|ui| {
+                if secondary_button(ui, "Open optional settings").clicked() {
+                    self.page = AppPage::Settings;
+                    self.show_runtime_missing_window = false;
+                    self.show_runtime_settings = false;
+                }
+                if secondary_button(ui, "Open live save folder").clicked() {
+                    self.open_live_sessions_output_dir();
+                }
+            });
         });
+    }
+
+    fn ui_setup_download_status(&self, ui: &mut egui::Ui) {
+        let status = self
+            .runtime_state
+            .lock()
+            .ok()
+            .and_then(|state| state.download_status.clone());
+        if let Some(status) = status {
+            engine_panel_frame().show(ui, |ui| {
+                ui.heading("Download progress");
+                ui.label(&status);
+                if let Some(fraction) = parse_download_fraction(&status) {
+                    ui.add(egui::ProgressBar::new(fraction).desired_width(f32::INFINITY));
+                }
+            });
+            ui.add_space(8.0);
+        }
     }
 
     fn ui_setup_wizard_footer(&mut self, ui: &mut egui::Ui) {
