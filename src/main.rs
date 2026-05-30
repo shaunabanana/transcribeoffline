@@ -5312,6 +5312,7 @@ impl UiApp {
 
     fn ui_media_inputs_panel(&mut self, ui: &mut egui::Ui, list_height: f32) {
         engine_panel_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.heading("Media files");
             ui.label("Add audio or video files to transcribe locally.");
             ui.set_min_height(list_height + 44.0);
@@ -5415,8 +5416,55 @@ impl UiApp {
             .unwrap_or_default()
     }
 
+    fn output_entry_count(&self) -> usize {
+        self.runtime_state
+            .lock()
+            .ok()
+            .map(|state| state.output_entries.len())
+            .unwrap_or(0)
+    }
+
+    fn ui_transcribe_progress(&self, ui: &mut egui::Ui) {
+        let snapshot = self.runtime_state.lock().ok().map(|state| {
+            (
+                state.active_job.clone(),
+                state.active_stage.clone(),
+                state.job_queue.len(),
+                state.running_jobs,
+                state.completed_jobs,
+            )
+        });
+        let Some((active_job, active_stage, queued, running, completed)) = snapshot else {
+            ui.label("Job status unavailable.");
+            return;
+        };
+
+        if let Some(active) = active_job {
+            let total = active.total_files.max(1);
+            let done = active.done_files.min(total);
+            let fraction = done as f32 / total as f32;
+            ui.label(format!(
+                "Running job #{}: file {}/{}",
+                active.id, done, active.total_files
+            ));
+            if !active_stage.trim().is_empty() {
+                ui.label(format!("Stage: {active_stage}"));
+            }
+            let progress_width = ui.available_width().clamp(120.0, 520.0);
+            ui.add(egui::ProgressBar::new(fraction).desired_width(progress_width));
+        } else if running > 0 || queued > 0 {
+            ui.label(format!("{running} running | {queued} queued | {completed} complete"));
+            if !active_stage.trim().is_empty() {
+                ui.label(format!("Stage: {active_stage}"));
+            }
+        } else {
+            ui.label(format!("Idle | {completed} complete"));
+        }
+    }
+
     fn ui_output_results_panel(&mut self, ui: &mut egui::Ui, list_height: f32) {
         engine_panel_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.heading("Transcript outputs");
             ui.label("Open existing or newly generated transcripts for review.");
             ui.set_min_height(list_height + 44.0);
@@ -5576,17 +5624,32 @@ impl UiApp {
 
         ui.add_space(8.0);
         engine_panel_frame().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.heading("Run transcription");
             let files = self.selected_media_files();
+            let output_count = self.output_entry_count();
             ui.label(format!("{} selected file(s)", files.len()));
-            ui.label("Generated and discovered transcript files appear in Review.");
-            ui.label(self.banner_text_parity());
+            ui.label(format!(
+                "{} transcript output(s) available for review",
+                output_count
+            ));
+            self.ui_transcribe_progress(ui);
             ui.horizontal_wrapped(|ui| {
                 if accent_button(ui, "Run selected").clicked() {
                     self.enqueue_job(files.clone());
                 }
-                if secondary_button(ui, "Review outputs").clicked() {
+                let review_ready = output_count > 0;
+                let review_clicked = if review_ready {
+                    accent_button(ui, "Review outputs").clicked()
+                } else {
+                    ui.add_enabled(false, egui::Button::new("Review outputs"))
+                        .clicked()
+                };
+                if review_clicked {
                     self.page = AppPage::Review;
+                }
+                if !review_ready {
+                    ui.label("Run transcription or add an output transcript to enable review.");
                 }
             });
         });
