@@ -2725,6 +2725,7 @@ impl UiApp {
                     "Not installed yet. Click Download to install this Whisper model.",
                 );
             }
+            self.ui_setup_download_status(ui, DownloadKind::Whisper);
             let selected_whisper_spec = WHISPER_MODELS
                 .get(self.whisper_models)
                 .copied()
@@ -2794,6 +2795,7 @@ impl UiApp {
             } else {
                 ui.label("Optional for the Live tab. Download a Voxtral model to enable microphone transcription.");
             }
+            self.ui_setup_download_status(ui, DownloadKind::Live);
             let selected_live_spec = LIVE_TRANSCRIPTION_MODELS
                 .get(self.live_models)
                 .copied()
@@ -2835,6 +2837,7 @@ impl UiApp {
                     format!("Missing required file: {}", missing.join(", ")),
                 );
             }
+            self.ui_setup_download_status(ui, DownloadKind::Diarization);
             ui.label(format!(
                 "Download size: {}",
                 human_model_size(DIARIZATION_MODEL_SIZE_BYTES)
@@ -2915,6 +2918,7 @@ impl UiApp {
                     "Download installs the selected GGUF into the shared app data model store.",
                 );
             }
+            self.ui_setup_download_status(ui, DownloadKind::Chat);
             ui.label(format!(
                 "Download size: {}",
                 human_model_size(selected_spec.size_bytes)
@@ -6165,6 +6169,18 @@ impl UiApp {
             |ui| {
                 engine_panel_frame().show(ui, |ui| {
                     ui.label("Prompt");
+                    let chat_model_ready = self.ensure_chat_model_path_for_run();
+                    if !chat_model_ready {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(160, 25, 25),
+                                "Chat model is not configured.",
+                            );
+                            if secondary_button(ui, "Open Chat Settings").clicked() {
+                                self.show_chat_settings = true;
+                            }
+                        });
+                    }
                     let reserved_for_header_and_actions = 74.0;
                     let input_height = (prompt_height - reserved_for_header_and_actions).max(28.0);
                     ui.add_sized(
@@ -6173,7 +6189,9 @@ impl UiApp {
                             .desired_width(f32::INFINITY),
                     );
                     ui.horizontal(|ui| {
-                        let can_send = !self.is_chatting && self.chat_source_path.is_some();
+                        let can_send = !self.is_chatting
+                            && self.chat_source_path.is_some()
+                            && chat_model_ready;
                         let send = if can_send {
                             accent_button(ui, "Send")
                         } else {
@@ -6184,6 +6202,8 @@ impl UiApp {
                         }
                         if self.chat_source_path.is_none() {
                             ui.label("Select an output file above to enable chat.");
+                        } else if !chat_model_ready {
+                            ui.label("Configure a chat model to enable chat.");
                         }
                     });
                 });
@@ -6403,11 +6423,17 @@ impl UiApp {
                 let info = ui.small_button("i");
                 info.on_hover_text(ANONYMISE_TOOLTIP);
 
-                if self.settings.chat_model.trim().is_empty() {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(160, 25, 25),
-                        "Chat model is not configured. Set it in Settings -> Chat settings.",
-                    );
+                let chat_model_ready = self.ensure_chat_model_path_for_run();
+                if !chat_model_ready {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(160, 25, 25),
+                            "Chat model is not configured.",
+                        );
+                        if secondary_button(ui, "Open Chat Settings").clicked() {
+                            self.show_chat_settings = true;
+                        }
+                    });
                 } else {
                     ui.label(format!(
                         "Using chat model: {}",
