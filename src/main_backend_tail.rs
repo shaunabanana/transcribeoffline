@@ -721,10 +721,16 @@ fn start_model_download(
                     format_size(speed as u64)
                 ),
             };
-            let _ = tx_progress.send(UiMessage::DownloadStatus(Some(status)));
+            let _ = tx_progress.send(UiMessage::DownloadStatus {
+                kind: DownloadKind::Whisper,
+                status: Some(status),
+            });
         });
 
-        let _ = tx.send(UiMessage::DownloadStatus(None));
+        let _ = tx.send(UiMessage::DownloadStatus {
+            kind: DownloadKind::Whisper,
+            status: None,
+        });
         match result {
             Ok(_) => {
                 let _ = tx.send(UiMessage::WhisperInstalled(dest.clone()));
@@ -777,10 +783,16 @@ fn start_live_model_download(
                     format_size(speed as u64)
                 ),
             };
-            let _ = tx_progress.send(UiMessage::DownloadStatus(Some(status)));
+            let _ = tx_progress.send(UiMessage::DownloadStatus {
+                kind: DownloadKind::Live,
+                status: Some(status),
+            });
         });
 
-        let _ = tx.send(UiMessage::DownloadStatus(None));
+        let _ = tx.send(UiMessage::DownloadStatus {
+            kind: DownloadKind::Live,
+            status: None,
+        });
         match result {
             Ok(_) => {
                 let _ = tx.send(UiMessage::LiveModelInstalled(dest.clone()));
@@ -837,10 +849,16 @@ fn start_chat_model_download(
                     format_size(speed as u64)
                 ),
             };
-            let _ = tx_progress.send(UiMessage::DownloadStatus(Some(status)));
+            let _ = tx_progress.send(UiMessage::DownloadStatus {
+                kind: DownloadKind::Chat,
+                status: Some(status),
+            });
         });
 
-        let _ = tx.send(UiMessage::DownloadStatus(None));
+        let _ = tx.send(UiMessage::DownloadStatus {
+            kind: DownloadKind::Chat,
+            status: None,
+        });
         match result {
             Ok(_) => {
                 let _ = tx.send(UiMessage::ChatModelInstalled(dest.clone()));
@@ -890,10 +908,16 @@ fn start_diarization_download(
                         format_size(speed as u64)
                     ),
                 };
-                let _ = tx_progress.send(UiMessage::DownloadStatus(Some(status)));
+                let _ = tx_progress.send(UiMessage::DownloadStatus {
+                    kind: DownloadKind::Diarization,
+                    status: Some(status),
+                });
             });
 
-        let _ = tx.send(UiMessage::DownloadStatus(None));
+        let _ = tx.send(UiMessage::DownloadStatus {
+            kind: DownloadKind::Diarization,
+            status: None,
+        });
         match result {
             Ok(_) => {
                 let _ = tx.send(UiMessage::DiarizationInstalled(dest_dir.clone()));

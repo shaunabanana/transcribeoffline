@@ -689,6 +689,7 @@ struct RuntimeState {
     queue_worker_running: bool,
     next_job_id: u64,
     download_status: Option<String>,
+    download_statuses: HashMap<DownloadKind, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -874,7 +875,10 @@ enum UiMessage {
         audio_path: PathBuf,
         error: String,
     },
-    DownloadStatus(Option<String>),
+    DownloadStatus {
+        kind: DownloadKind,
+        status: Option<String>,
+    },
     WhisperInstalled(PathBuf),
     LiveModelInstalled(PathBuf),
     ChatModelInstalled(PathBuf),
@@ -905,6 +909,14 @@ enum UiMessage {
         session_id: u64,
         error: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DownloadKind {
+    Whisper,
+    Live,
+    Chat,
+    Diarization,
 }
 
 #[derive(Clone)]
@@ -1835,6 +1847,7 @@ impl UiApp {
             || !setup_completed
             || self.runtime_post_install_prompt;
         egui::Window::new("Runtime Setup Required")
+            .id(egui::Id::new("runtime_setup_required_wizard_v2"))
             .collapsible(false)
             .resizable(true)
             .default_size([740.0, 480.0])
@@ -1869,6 +1882,7 @@ impl UiApp {
         let mut open = self.show_runtime_settings;
         let mut close_clicked = false;
         egui::Window::new("Setup")
+            .id(egui::Id::new("setup_wizard_window_v2"))
             .collapsible(false)
             .resizable(true)
             .default_size([740.0, 480.0])
@@ -2355,9 +2369,19 @@ impl UiApp {
                         );
                     }
                 }
-                UiMessage::DownloadStatus(status) => {
+                UiMessage::DownloadStatus { kind, status } => {
                     if let Ok(mut state) = self.runtime_state.lock() {
-                        state.download_status = status;
+                        match status {
+                            Some(status) => {
+                                state.download_statuses.insert(kind, status.clone());
+                                state.download_status = Some(status);
+                            }
+                            None => {
+                                state.download_statuses.remove(&kind);
+                                state.download_status =
+                                    state.download_statuses.values().next().cloned();
+                            }
+                        }
                     }
                 }
                 UiMessage::WhisperInstalled(path) => {
@@ -4426,8 +4450,6 @@ impl UiApp {
             "Download or select the required transcription and diarization models. Downloads can run in parallel; progress appears here and in the activity bar.",
         );
 
-        self.ui_setup_download_status(ui);
-
         engine_panel_frame().show(ui, |ui| {
             ui.heading("Transcription model (Whisper)");
             if self.whisper_model_ready() {
@@ -4441,6 +4463,7 @@ impl UiApp {
                     "No Whisper model found yet.",
                 );
             }
+            self.ui_setup_download_status(ui, DownloadKind::Whisper);
             ui.horizontal_wrapped(|ui| {
                 ui.label("Suggested model:");
                 egui::ComboBox::from_id_salt("wizard_whisper_model_combo")
@@ -4508,6 +4531,7 @@ impl UiApp {
                     format!("Missing required file: {}", missing.join(", ")),
                 );
             }
+            self.ui_setup_download_status(ui, DownloadKind::Diarization);
             ui.label(format!(
                 "Folder: {}",
                 self.settings.diarization_models_dir.trim()
@@ -4570,21 +4594,19 @@ impl UiApp {
         });
     }
 
-    fn ui_setup_download_status(&self, ui: &mut egui::Ui) {
+    fn ui_setup_download_status(&self, ui: &mut egui::Ui, kind: DownloadKind) {
         let status = self
             .runtime_state
             .lock()
             .ok()
-            .and_then(|state| state.download_status.clone());
+            .and_then(|state| state.download_statuses.get(&kind).cloned());
         if let Some(status) = status {
-            engine_panel_frame().show(ui, |ui| {
-                ui.heading("Download progress");
-                ui.label(&status);
-                if let Some(fraction) = parse_download_fraction(&status) {
-                    ui.add(egui::ProgressBar::new(fraction).desired_width(f32::INFINITY));
-                }
-            });
-            ui.add_space(8.0);
+            ui.separator();
+            ui.label(&status);
+            if let Some(fraction) = parse_download_fraction(&status) {
+                let width = ui.available_width().clamp(120.0, 520.0);
+                ui.add(egui::ProgressBar::new(fraction).desired_width(width));
+            }
         }
     }
 
