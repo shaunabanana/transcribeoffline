@@ -4110,8 +4110,8 @@ impl UiApp {
                     .inner_margin(egui::Margin::same(8)),
             )
             .show(ctx, |ui| {
-                ui.heading("Transcribe");
-                ui.label(egui::RichText::new("Offline").weak());
+                ui.heading("Transcribe Offline");
+                ui.label(egui::RichText::new("Local-first transcription").weak());
                 ui.separator();
                 for page in AppPage::ALL {
                     let selected = self.page == page;
