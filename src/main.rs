@@ -953,6 +953,57 @@ impl LegalDocKind {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppPage {
+    Home,
+    Setup,
+    Transcribe,
+    Review,
+    Live,
+    Chat,
+    Activity,
+    Settings,
+}
+
+impl AppPage {
+    const ALL: [Self; 8] = [
+        Self::Home,
+        Self::Setup,
+        Self::Transcribe,
+        Self::Review,
+        Self::Live,
+        Self::Chat,
+        Self::Activity,
+        Self::Settings,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Setup => "Setup",
+            Self::Transcribe => "Transcribe",
+            Self::Review => "Review",
+            Self::Live => "Live",
+            Self::Chat => "Chat",
+            Self::Activity => "Activity",
+            Self::Settings => "Settings",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Home => "Readiness, shortcuts, and current status.",
+            Self::Setup => "Install runtime and models, then configure optional features.",
+            Self::Transcribe => "Add media files and run local transcription jobs.",
+            Self::Review => "Open, edit, anonymise, rename speakers, and play transcripts.",
+            Self::Live => "Record microphone audio with live transcription and diarization.",
+            Self::Chat => "Ask questions about a selected transcript.",
+            Self::Activity => "Jobs, downloads, status messages, and diagnostics log.",
+            Self::Settings => "Runtime, transcription, chat, editing, appearance, and legal docs.",
+        }
+    }
+}
+
 #[derive(Default)]
 struct PlaybackBuffer {
     samples_stereo_f32: Vec<f32>,
@@ -1001,6 +1052,7 @@ struct UiApp {
     rx: mpsc::Receiver<UiMessage>,
     runtime_state: Arc<Mutex<RuntimeState>>,
 
+    page: AppPage,
     tab: usize,
     status: String,
     status_log: Vec<String>,
@@ -1189,6 +1241,7 @@ impl UiApp {
             tx,
             rx,
             runtime_state,
+            page: AppPage::Home,
             tab: 0,
             status: initial_status.clone(),
             status_log: vec![initial_status],
@@ -1880,14 +1933,17 @@ impl UiApp {
             ui.menu_button("Mode", |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 if native_menu_item(ui, "Transcription").clicked() {
+                    self.page = AppPage::Transcribe;
                     self.tab = 0;
                     ui.close();
                 }
                 if native_menu_item(ui, "Chat").clicked() {
+                    self.page = AppPage::Chat;
                     self.tab = 1;
                     ui.close();
                 }
                 if native_menu_item(ui, "Live").clicked() {
+                    self.page = AppPage::Live;
                     self.tab = 2;
                     ui.close();
                 }
@@ -4045,6 +4101,246 @@ impl UiApp {
         "0 running | 0 queued | 0 complete".to_string()
     }
 
+    fn ui_nav_rail(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("main-nav-rail")
+            .exact_width(150.0)
+            .frame(
+                egui::Frame::default()
+                    .fill(egui::Color32::from_rgb(238, 240, 243))
+                    .inner_margin(egui::Margin::same(8)),
+            )
+            .show(ctx, |ui| {
+                ui.heading("Transcribe");
+                ui.label(egui::RichText::new("Offline").weak());
+                ui.separator();
+                for page in AppPage::ALL {
+                    let selected = self.page == page;
+                    let response = ui
+                        .add_sized(
+                            [ui.available_width(), 28.0],
+                            egui::Button::new(page.label()).selected(selected),
+                        )
+                        .on_hover_text(page.description());
+                    if response.clicked() {
+                        self.page = page;
+                        match page {
+                            AppPage::Transcribe | AppPage::Review => self.tab = 0,
+                            AppPage::Live => self.tab = 2,
+                            AppPage::Chat => self.tab = 1,
+                            _ => {}
+                        }
+                    }
+                }
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.separator();
+                    if ui.small_button("Logs window").clicked() {
+                        self.show_logs_window = true;
+                    }
+                });
+            });
+    }
+
+    fn ui_page_heading(&self, ui: &mut egui::Ui, page: AppPage) {
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(page.label());
+            ui.label(egui::RichText::new(page.description()).weak());
+        });
+        ui.separator();
+    }
+
+    fn ui_home_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Home);
+        let setup_issues = self.runtime_setup_issues();
+        let runtime_ready = self.runtime_missing.is_empty();
+        let setup_ready = runtime_ready && setup_issues.is_empty();
+
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading(if setup_ready {
+                "Ready to transcribe"
+            } else {
+                "Setup needs attention"
+            });
+            ui.label(&self.status);
+            ui.separator();
+            ui.horizontal_wrapped(|ui| {
+                if accent_button(ui, "Open Setup").clicked() {
+                    self.page = AppPage::Setup;
+                }
+                if secondary_button(ui, "Transcribe Files").clicked() {
+                    self.page = AppPage::Transcribe;
+                }
+                if secondary_button(ui, "Review Transcripts").clicked() {
+                    self.page = AppPage::Review;
+                }
+                if secondary_button(ui, "View Activity").clicked() {
+                    self.page = AppPage::Activity;
+                }
+            });
+        });
+
+        ui.add_space(8.0);
+        ui.columns(2, |cols| {
+            engine_panel_frame().show(&mut cols[0], |ui| {
+                ui.heading("Required readiness");
+                ui.label(if runtime_ready {
+                    "Runtime: ready"
+                } else {
+                    "Runtime: missing or incomplete"
+                });
+                if setup_issues.is_empty() {
+                    ui.label("Required models: ready");
+                } else {
+                    for issue in &setup_issues {
+                        ui.colored_label(egui::Color32::from_rgb(160, 25, 25), issue);
+                    }
+                }
+            });
+            engine_panel_frame().show(&mut cols[1], |ui| {
+                ui.heading("Current work");
+                ui.label(self.banner_text_parity());
+                let active_output = self
+                    .transcript_output_path
+                    .as_ref()
+                    .and_then(|path| path.file_name().and_then(|name| name.to_str()))
+                    .unwrap_or("No transcript loaded");
+                ui.label(format!("Transcript: {active_output}"));
+                if self.live_capture.is_some() {
+                    ui.label("Live session: recording");
+                } else {
+                    ui.label("Live session: idle");
+                }
+            });
+        });
+    }
+
+    fn ui_setup_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Setup);
+        let runtime_dir = resolve_runtime_dir(Path::new(self.settings.runtime_dir.trim()));
+        egui::ScrollArea::vertical()
+            .id_salt("setup_page_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.label("Use this setup center to install or repair the required runtime and models. The step-by-step wizard will be layered onto this page next.");
+                ui.label("Required: runtime install, unsigned runtime unblock/recheck, Whisper model, and Sortformer diarization model.");
+                let _ = self.ui_runtime_management_controls(ui, &runtime_dir, false);
+                ui.separator();
+                self.ui_runtime_models_panel(ui, true);
+                ui.separator();
+                ui.label("Optional default: execution device selection can stay unchanged unless you want to choose CPU/GPU manually.");
+                self.ui_runtime_device_panel(ui);
+                self.ui_runtime_parameters_panel(ui);
+            });
+    }
+
+    fn ui_review_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Review);
+        ui.label(
+            "Review currently uses the existing transcript workspace. A later slice will separate it from transcription inputs and existing-result discovery.",
+        );
+        ui.separator();
+        self.ui_transcription_parity(ui);
+    }
+
+    fn ui_activity_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Activity);
+        let snapshot = self.runtime_state.lock().ok().map(|state| {
+            (
+                state.running_jobs,
+                state.job_queue.len(),
+                state.completed_jobs,
+                state.active_stage.clone(),
+                state.download_status.clone(),
+            )
+        });
+
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Jobs and downloads");
+            if let Some((running, queued, completed, stage, download_status)) = snapshot.as_ref() {
+                ui.label(format!(
+                    "Jobs: {running} running | {queued} queued | {completed} complete"
+                ));
+                if !stage.trim().is_empty() {
+                    ui.label(format!("Current stage: {stage}"));
+                }
+                if let Some(download) = download_status.as_ref() {
+                    ui.label(download);
+                    if let Some(progress) = parse_download_fraction(download) {
+                        ui.add(egui::ProgressBar::new(progress).desired_width(240.0));
+                    }
+                }
+            } else {
+                ui.label("Activity state unavailable.");
+            }
+        });
+
+        ui.add_space(8.0);
+        engine_panel_frame().show(ui, |ui| {
+            ui.heading("Status log");
+            let log_h = (ui.available_height() - 44.0).max(160.0);
+            egui::ScrollArea::vertical()
+                .id_salt("activity_status_log_scroll")
+                .max_height(log_h)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for line in &self.status_log {
+                        ui.label(egui::RichText::new(line).monospace());
+                    }
+                });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if secondary_button(ui, "Clear logs").clicked() {
+                    self.status_log.clear();
+                    self.push_log_only("Log cleared.");
+                }
+                if secondary_button(ui, "Open logs window").clicked() {
+                    self.show_logs_window = true;
+                }
+            });
+        });
+    }
+
+    fn ui_settings_page(&mut self, ui: &mut egui::Ui) {
+        self.ui_page_heading(ui, AppPage::Settings);
+        ui.columns(2, |cols| {
+            engine_panel_frame().show(&mut cols[0], |ui| {
+                ui.heading("Configuration");
+                if accent_button(ui, "Open Setup").clicked() {
+                    self.page = AppPage::Setup;
+                }
+                if secondary_button(ui, "Transcription settings").clicked() {
+                    self.show_transcription_settings = true;
+                }
+                if secondary_button(ui, "Chat settings").clicked() {
+                    self.show_chat_settings = true;
+                }
+                if secondary_button(ui, "Editing settings").clicked() {
+                    self.show_editing_settings = true;
+                }
+                if secondary_button(ui, "Runtime setup window").clicked() {
+                    self.show_runtime_settings = true;
+                }
+            });
+            engine_panel_frame().show(&mut cols[1], |ui| {
+                ui.heading("Legal and diagnostics");
+                if secondary_button(ui, "About").clicked() {
+                    self.show_about = true;
+                }
+                if secondary_button(ui, "Notices").clicked() {
+                    self.open_legal_doc(LegalDocKind::ThirdPartyNotices);
+                }
+                if secondary_button(ui, "Third-party licenses").clicked() {
+                    self.open_legal_doc(LegalDocKind::ThirdPartyLicenses);
+                }
+                if secondary_button(ui, "Engine licenses").clicked() {
+                    self.open_legal_doc(LegalDocKind::EngineThirdPartyLicenses);
+                }
+                if secondary_button(ui, "Activity and logs").clicked() {
+                    self.page = AppPage::Activity;
+                }
+            });
+        });
+    }
+
     fn ui_header_parity(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Mode:");
@@ -4067,12 +4363,15 @@ impl UiApp {
             ui.add_space(6.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if tab_button(ui, "Chat", self.tab == 1).clicked() {
+                    self.page = AppPage::Chat;
                     self.tab = 1;
                 }
                 if tab_button(ui, "Live", self.tab == 2).clicked() {
+                    self.page = AppPage::Live;
                     self.tab = 2;
                 }
                 if tab_button(ui, "Transcription", self.tab == 0).clicked() {
+                    self.page = AppPage::Transcribe;
                     self.tab = 0;
                 }
             });
@@ -4150,7 +4449,7 @@ impl UiApp {
             }
         });
         if open_logs || row.response.clicked() {
-            self.show_logs_window = true;
+            self.page = AppPage::Activity;
         }
     }
 
@@ -5191,7 +5490,8 @@ impl UiApp {
                                 );
                                 maybe_autoscroll_text_selection(ui, &output);
                                 if output.response.double_clicked() {
-                                    if let Some(pointer_pos) = output.response.interact_pointer_pos()
+                                    if let Some(pointer_pos) =
+                                        output.response.interact_pointer_pos()
                                     {
                                         let cursor = output
                                             .galley
@@ -5799,20 +6099,26 @@ impl UiApp {
             self.ui_status_bar_parity(ui);
         });
 
+        self.ui_nav_rail(ctx);
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::default()
                     .fill(ctx.style().visuals.panel_fill)
                     .inner_margin(egui::Margin::same(6)),
             )
-            .show(ctx, |ui| match self.tab {
-                0 => {
+            .show(ctx, |ui| match self.page {
+                AppPage::Home => self.ui_home_page(ui),
+                AppPage::Setup => self.ui_setup_page(ui),
+                AppPage::Transcribe => {
                     self.ui_header_parity(ui);
                     self.ui_transcription_parity(ui);
                 }
-                1 => self.ui_chat_parity(ui),
-                2 => self.ui_live_parity(ui),
-                _ => {}
+                AppPage::Review => self.ui_review_page(ui),
+                AppPage::Live => self.ui_live_parity(ui),
+                AppPage::Chat => self.ui_chat_parity(ui),
+                AppPage::Activity => self.ui_activity_page(ui),
+                AppPage::Settings => self.ui_settings_page(ui),
             });
 
         self.ui_logs_window_parity(ctx);
@@ -6352,11 +6658,12 @@ fn maybe_autoscroll_text_selection(ui: &egui::Ui, output: &egui::text_edit::Text
         let hot_zone = 28.0;
         let max_step = 96.0;
         if pointer_pos.y < output.response.rect.top() + hot_zone {
-            let strength =
-                ((output.response.rect.top() + hot_zone - pointer_pos.y) / hot_zone).clamp(0.0, 1.0);
+            let strength = ((output.response.rect.top() + hot_zone - pointer_pos.y) / hot_zone)
+                .clamp(0.0, 1.0);
             Some(-max_step * strength)
         } else if pointer_pos.y > output.response.rect.bottom() - hot_zone {
-            let strength = ((pointer_pos.y - (output.response.rect.bottom() - hot_zone)) / hot_zone)
+            let strength = ((pointer_pos.y - (output.response.rect.bottom() - hot_zone))
+                / hot_zone)
                 .clamp(0.0, 1.0);
             Some(max_step * strength)
         } else {
