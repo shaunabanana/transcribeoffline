@@ -6481,9 +6481,11 @@ impl UiApp {
         }
         let mut open = self.show_speaker_rename_window;
         let mut should_close = false;
+        let speaker_count = self.speaker_rename_entries.len() as f32;
+        let default_height = (220.0 + speaker_count * 30.0).clamp(280.0, 520.0);
         egui::Window::new("Rename Speakers")
             .open(&mut open)
-            .default_size([520.0, 440.0])
+            .default_size([520.0, default_height])
             .resizable(true)
             .show(ctx, |ui| {
                 ui.label("Rename detected speaker tags in the edited transcript.");
@@ -6499,8 +6501,11 @@ impl UiApp {
                 if self.speaker_rename_entries.is_empty() {
                     ui.label("No speaker tags detected (expected format like SPEAKER_00).");
                 } else {
+                    let list_height = (self.speaker_rename_entries.len() as f32 * 30.0)
+                        .clamp(90.0, 300.0);
                     egui::ScrollArea::vertical()
                         .id_salt("speaker_rename_scroll")
+                        .max_height(list_height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             for entry in &mut self.speaker_rename_entries {
